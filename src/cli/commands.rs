@@ -1692,11 +1692,69 @@ pub fn optimize(args: OptimizeArgs, _verbosity: Verbosity) -> Result<()> {
 
     let contract_path_str = args.contract.to_string_lossy().to_string();
     let report = optimizer.generate_report(&contract_path_str);
-    // Render in the requested format. JSON exposes the full structured report
-    // (suggestions, per-function hotspots, and metadata); pretty stays markdown.
+    // Render in the requested format. JSON exposes structured suggestions,
+    // per-function hotspots, and metadata; pretty stays markdown. We build a
+    // dedicated serializable view rather than deriving Serialize across the
+    // whole profiler graph.
     let rendered = match args.format {
         crate::cli::args::OutputFormat::Json => {
-            serde_json::to_string_pretty(&report).map_err(|e| {
+            #[derive(serde::Serialize)]
+            struct Hotspot<'a> {
+                function: &'a str,
+                total_cpu: u64,
+                total_memory: u64,
+            }
+            #[derive(serde::Serialize)]
+            struct Suggestion<'a> {
+                category: &'a str,
+                title: &'a str,
+                description: &'a str,
+                estimated_cpu_savings: u64,
+                estimated_memory_savings: u64,
+                location: &'a str,
+                priority: String,
+            }
+            #[derive(serde::Serialize)]
+            struct OptimizeJsonReport<'a> {
+                contract_path: &'a str,
+                total_cpu: u64,
+                total_memory: u64,
+                potential_cpu_savings: u64,
+                potential_memory_savings: u64,
+                suggestions: Vec<Suggestion<'a>>,
+                hotspots: Vec<Hotspot<'a>>,
+            }
+
+            let view = OptimizeJsonReport {
+                contract_path: &report.contract_path,
+                total_cpu: report.total_cpu,
+                total_memory: report.total_memory,
+                potential_cpu_savings: report.potential_cpu_savings,
+                potential_memory_savings: report.potential_memory_savings,
+                suggestions: report
+                    .suggestions
+                    .iter()
+                    .map(|s| Suggestion {
+                        category: &s.category,
+                        title: &s.title,
+                        description: &s.description,
+                        estimated_cpu_savings: s.estimated_cpu_savings,
+                        estimated_memory_savings: s.estimated_memory_savings,
+                        location: &s.location,
+                        priority: s.priority.to_string(),
+                    })
+                    .collect(),
+                hotspots: report
+                    .functions
+                    .iter()
+                    .map(|f| Hotspot {
+                        function: &f.name,
+                        total_cpu: f.total_cpu,
+                        total_memory: f.total_memory,
+                    })
+                    .collect(),
+            };
+            serde_json::to_string_pretty(&view).map_err(|e| {
                 DebuggerError::FileError(format!(
                     "Failed to serialize optimization report as JSON: {}",
                     e
